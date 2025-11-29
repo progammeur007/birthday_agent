@@ -15,9 +15,10 @@ GIFT_STATUS = {
             "sub_state": 0,  # 0=Awaiting Clue Answer, 1=Awaiting Customization Request, 2=Customized
             "gift_name": "The Birthday Bard",
             "clue_question": "What color of dress was Harsh Wearing when you first saw him 😏?",
-            "expected_answer": "blue" or "Blue" or "BLUE" or "Cyan" or "Sky blue",  
+            # FIX: Use a list of acceptable answers for robust checking
+            "expected_answer_list": ["blue", "cyan", "sky blue"],
             "initial_gift_content": (
-                  "My Dearest Anushka, let this humble verse begin,\n"
+                "My Dearest Anushka, let this humble verse begin,\n"
                 "A tale of when our two small worlds first came within.\n"
                 "The night we met, so simple yet so beautifully spun,\n"
                 "A quiet tale of destiny,where two souls became one.\n\n"
@@ -44,8 +45,8 @@ GIFT_STATUS = {
             "sub_state": 0,
             "gift_name": "The Digital Gallery",
             "clue_question": "What is Harsh's favorite animal that he always promises to get you?",
-            "expected_answer": "dog", 
-            "initial_gift_content": "<a href='#' target='_blank'>Click here to view your personalized Digital Photo Album!</a>",
+            "expected_answer_list": ["dog", "pup", "puppy"], 
+            "initial_gift_content": "<a href='#' target='_blank'>Click here to view your personalized Digital Photo Album!</a> (Hint: Don't forget to ask me for the next challenge after viewing this!)",
             "customization_prompt": "", 
             "current_poem": "",
         }
@@ -56,7 +57,7 @@ GIFT_STATUS = {
     "history": [] 
 }
 
-# --- CORE LOGIC: Determines the next state and builds the LLM prompt ---
+# --- HELPER FUNCTION: Time Lock Checker (STABLE) ---
 
 def get_time_status(current_gift_id: int) -> str:
     """Checks if the next gift is time-locked and returns a detailed status."""
@@ -66,12 +67,10 @@ def get_time_status(current_gift_id: int) -> str:
     if next_gift_id > len(GIFT_STATUS["clues"]):
         return "STATUS: ALL_GIFTS_COMPLETE"
 
-    # Check time lock for the NEXT gift (Gift 2 is unlocked by Gift 1's time)
     required_interval = GIFT_UNLOCK_INTERVALS.get(next_gift_id)
-    completion_time = GIFT_STATUS["completion_timestamps"].get(current_gift_id) # Use current ID for timestamp lookup
+    completion_time = GIFT_STATUS["completion_timestamps"].get(current_gift_id) 
     
     if not completion_time or not required_interval:
-        # Fallback if time isn't logged (shouldn't happen on State 2 exit)
         return "STATUS: ERROR_TIME_LOG_MISSING"
 
     time_difference = datetime.datetime.now() - completion_time
@@ -91,6 +90,8 @@ def get_time_status(current_gift_id: int) -> str:
         GIFT_STATUS["clues"][next_gift_id - 1]["sub_state"] = 0 # Set the new gift to active
         return f"STATUS: DELIVER_NEXT_CLUE. NEXT_QUESTION: {GIFT_STATUS['clues'][next_gift_id - 1]['clue_question']}"
 
+# --- CORE LOGIC: Determines the next state and builds the LLM prompt ---
+
 def generate_next_agent_prompt(user_input: str) -> str:
     """
     Manages the game state machine and generates the context prompt for the LLM.
@@ -101,32 +102,30 @@ def generate_next_agent_prompt(user_input: str) -> str:
         return "STATUS: ALL_GIFTS_COMPLETE. The hunt is over! Deliver the final message and conclude the game."
         
     current_gift_id = active_gift["id"]
-
-    # --- REGEX CHECK FOR EXIT COMMAND ---
+    
+    # --- REGEX CHECK FOR EXIT COMMAND (State 1) ---
     if active_gift['sub_state'] == 1:
-        # Simple regex check for the exit phrase
         exit_match = re.search(r"i[' ]?m done|i am done|perfect", user_input.lower())
         if exit_match:
-            active_gift["sub_state"] = 2 # Finalize gift
-            GIFT_STATUS["completion_timestamps"][current_gift_id] = datetime.datetime.now() # Log completion time
-            
-            # Agent pivots to check the time lock status for the next gift
+            active_gift["sub_state"] = 2 
+            GIFT_STATUS["completion_timestamps"][current_gift_id] = datetime.datetime.now() 
             return get_time_status(current_gift_id)
 
     # State 0: AWAITING CLUE ANSWER
     if active_gift['sub_state'] == 0:
         normalized_input = user_input.lower().strip().replace(" ", "")
-        normalized_expected = active_gift["expected_answer"].lower().strip().replace(" ", "")
-
-        if normalized_input == normalized_expected:
+        
+        # Check if normalized input matches any item in the list
+        if normalized_input in [ans.lower().replace(" ", "") for ans in active_gift["expected_answer_list"]]:
             active_gift["sub_state"] = 1 
             active_gift["current_poem"] = active_gift["initial_gift_content"] 
             
-            # If the gift is simple (not custom poem), move straight to 2
+            # If the gift is simple (Gift 2+), bypass customization
             if active_gift['id'] > 1:
                 active_gift["sub_state"] = 2
                 GIFT_STATUS["completion_timestamps"][active_gift["id"]] = datetime.datetime.now()
-            
+                return get_time_status(current_gift_id) 
+
             return (
                 f"STATUS: SUCCESS_UNLOCK. "
                 f"INITIAL_CONTENT: {active_gift['initial_gift_content']}. "
@@ -137,13 +136,12 @@ def generate_next_agent_prompt(user_input: str) -> str:
 
     # State 1: AWAITING CUSTOMIZATION REQUEST (LLM Generation)
     elif active_gift['sub_state'] == 1:
-        # Check for guardrail violation 
         if "next" in user_input.lower() or "challenge" in user_input.lower() or "gift" in user_input.lower():
             return "STATUS: GUARDRAIL_VIOLATION. The user asked for the next step/gift. Enforce the guardrail rule."
         
-        # Success: User is providing a customization request. Trigger LLM call in app.py.
+        # SUCCESS: User is providing a customization request. Trigger LLM call in app.py.
         customization_prompt = (
-            f"You are a funny and romantic rewrite specialist. Rewrite the poem entirely based on the user's request. it must be a reply to harsh's poem ex. if user asks to make it funnier then you need to make a thank you reply to harsh in a funnier tone  "
+            f"You are a funny and romantic rewrite specialist. Rewrite the poem entirely based on the user's request. It MUST be a reply to Harsh's poem. "
             f"If the user asks to 'roast Harsh,' make the roast **funny and affectionate,** NEVER mean or dismissive. "
             f"The final poem MUST be concise, under 8 lines, and suitable for a cheerful chat interface. "
             f"Current Poem (Modify This):\n---\n{active_gift['current_poem']}\n-\n"
@@ -153,8 +151,6 @@ def generate_next_agent_prompt(user_input: str) -> str:
 
     # State 2: CUSTOMIZED/UNLOCKED (User must ask for the next step)
     elif active_gift['sub_state'] == 2:
-        # User is likely asking for next step after seeing the time lock message
-        # Check time status again to deliver the next message (time lock or new clue)
         return get_time_status(current_gift_id)
 
     return "STATUS: UNKNOWN. Prompt the user for what they want to do next."
