@@ -3,7 +3,8 @@ from flask import Flask, request, jsonify, render_template
 from google import genai
 from google.genai import types 
 from dotenv import load_dotenv
-
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Import tools, state, and generators
 from agent_tools import GIFT_STATUS, generate_next_agent_prompt
 from gemini_generator import generate_text_content, generate_image_content
